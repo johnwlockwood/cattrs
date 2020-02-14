@@ -1,9 +1,10 @@
 """Loading of attrs classes."""
+from typing import Any, Union
+
 from attr import asdict, astuple, Factory, fields, NOTHING
 from hypothesis import assume, given
+from cattr.converters import Converter
 from hypothesis.strategies import data, lists, sampled_from
-
-from typing import Union
 
 from . import simple_classes
 
@@ -21,7 +22,7 @@ def test_structure_simple_from_dict(converter, cl_and_vals):
     assert obj == loaded
 
 
-@given(simple_classes(defaults=True), data())
+@given(simple_classes(defaults=True, min_attrs=1), data())
 def test_structure_simple_from_dict_default(converter, cl_and_vals, data):
     """Test structuring non-nested attrs classes with default value."""
     cl, vals = cl_and_vals

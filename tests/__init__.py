@@ -5,16 +5,18 @@ import os
 from collections import OrderedDict
 from enum import Enum
 from typing import (
-    Tuple,
-    Sequence,
-    MutableSequence,
-    List,
-    Dict,
-    MutableMapping,
-    Mapping,
     Any,
+    Dict,
+    List,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    MutableSet,
+    Sequence,
+    Set,
+    Tuple,
 )
-from cattr._compat import is_py2, bytes, unicode
+from cattr._compat import bytes, unicode
 
 import attr
 
@@ -22,41 +24,27 @@ from attr import make_class, NOTHING
 from hypothesis import strategies as st, settings, HealthCheck
 
 settings.register_profile(
-    "CI", settings(suppress_health_check=[HealthCheck.too_slow])
+    "CI", settings(suppress_health_check=[HealthCheck.too_slow]), deadline=None
 )
 
 if "CI" in os.environ:
     settings.load_profile("CI")
 
 
-if is_py2:
-    # we exclude float checks from py2, because their stringification is not
-    # consistent
-    primitive_strategies = st.sampled_from(
-        [(st.integers(), int), (st.text(), unicode), (st.binary(), bytes)]
-    )
-else:
-    primitive_strategies = st.sampled_from(
-        [
-            (st.integers(), int),
-            (st.floats(allow_nan=False), float),
-            (st.text(), unicode),
-            (st.binary(), bytes),
-        ]
-    )
+primitive_strategies = st.sampled_from(
+    [
+        (st.integers(), int),
+        (st.floats(allow_nan=False), float),
+        (st.text(), unicode),
+        (st.binary(), bytes),
+    ]
+)
 
 
 @st.composite
 def enums_of_primitives(draw):
     """Generate enum classes with primitive values."""
-    if is_py2:
-        names = draw(
-            st.sets(
-                st.text(alphabet=string.ascii_letters, min_size=1), min_size=1
-            )
-        )
-    else:
-        names = draw(st.sets(st.text(min_size=1), min_size=1))
+    names = draw(st.sets(st.text(min_size=1), min_size=1))
     n = len(names)
     vals = draw(
         st.one_of(
@@ -75,6 +63,7 @@ def enums_of_primitives(draw):
 
 
 list_types = st.sampled_from([List, Sequence, MutableSequence])
+set_types = st.sampled_from([Set, MutableSet])
 
 
 @st.composite
@@ -86,6 +75,22 @@ def lists_of_primitives(draw):
     prim_strat, t = draw(primitive_strategies)
     list_t = draw(list_types.map(lambda list_t: list_t[t]) | list_types)
     return draw(st.lists(prim_strat)), list_t
+
+
+@st.composite
+def mut_sets_of_primitives(draw):
+    """A strategy that generates mutable sets of primitives."""
+    prim_strat, t = draw(primitive_strategies)
+    set_t = draw(set_types.map(lambda set_t: set_t[t]) | set_types)
+    return draw(st.sets(prim_strat)), set_t
+
+
+@st.composite
+def frozen_sets_of_primitives(draw):
+    """A strategy that generates frozen sets of primitives."""
+    prim_strat, t = draw(primitive_strategies)
+    set_t = draw(st.just(Set) | st.just(Set[t]))
+    return frozenset(draw(st.sets(prim_strat))), set_t
 
 
 h_tuple_types = st.sampled_from([Tuple, Sequence])
@@ -101,6 +106,10 @@ h_tuples_of_primitives = primitive_strategies.flatmap(
 dict_types = st.sampled_from([Dict, MutableMapping, Mapping])
 
 seqs_of_primitives = st.one_of(lists_of_primitives(), h_tuples_of_primitives)
+
+sets_of_primitives = st.one_of(
+    mut_sets_of_primitives(), frozen_sets_of_primitives()
+)
 
 
 def create_generic_dict_type(type1, type2):
@@ -133,10 +142,14 @@ def gen_attr_names():
     Generate names for attributes, 'a'...'z', then 'aa'...'zz'.
     ~702 different attribute names should be enough in practice.
     Some short strings (such as 'as') are keywords, so we skip them.
+
+    Every second attribute name is private (starts with an underscore).
     """
     lc = string.ascii_lowercase
+    has_underscore = False
     for c in lc:
-        yield c
+        yield c if not has_underscore else "_" + c
+        has_underscore = not has_underscore
     for outer in lc:
         for inner in lc:
             res = outer + inner
@@ -177,11 +190,34 @@ def just_class(tup):
     return _create_hyp_class(combined_attrs)
 
 
+def just_class_with_type(tup):
+    nested_cl = tup[1][0]
+    default = attr.Factory(nested_cl)
+    combined_attrs = list(tup[0])
+    combined_attrs.append(
+        (attr.ib(default=default, type=nested_cl), st.just(nested_cl()))
+    )
+    return _create_hyp_class(combined_attrs)
+
+
 def list_of_class(tup):
     nested_cl = tup[1][0]
     default = attr.Factory(lambda: [nested_cl()])
     combined_attrs = list(tup[0])
     combined_attrs.append((attr.ib(default=default), st.just([nested_cl()])))
+    return _create_hyp_class(combined_attrs)
+
+
+def list_of_class_with_type(tup):
+    nested_cl = tup[1][0]
+    default = attr.Factory(lambda: [nested_cl()])
+    combined_attrs = list(tup[0])
+    combined_attrs.append(
+        (
+            attr.ib(default=default, type=List[nested_cl]),
+            st.just([nested_cl()]),
+        )
+    )
     return _create_hyp_class(combined_attrs)
 
 
@@ -212,7 +248,9 @@ def _create_hyp_nested_strategy(simple_class_strategy):
 
     return (
         attrs_and_classes.flatmap(just_class)
+        | attrs_and_classes.flatmap(just_class_with_type)
         | attrs_and_classes.flatmap(list_of_class)
+        | attrs_and_classes.flatmap(list_of_class_with_type)
         | attrs_and_classes.flatmap(dict_of_class)
     )
 
@@ -242,7 +280,7 @@ def int_attrs(draw, defaults=None):
 
 
 @st.composite
-def str_attrs(draw, defaults=None):
+def str_attrs(draw, defaults=None, type_annotations=None):
     """
     Generate a tuple of an attribute and a strategy that yields strs for that
     attribute.
@@ -250,7 +288,11 @@ def str_attrs(draw, defaults=None):
     default = NOTHING
     if defaults is True or (defaults is None and draw(st.booleans())):
         default = draw(st.text())
-    return (attr.ib(default=default), st.text())
+    if (type_annotations is None and draw(st.booleans())) or type_annotations:
+        type = unicode
+    else:
+        type = None
+    return (attr.ib(default=default, type=type), st.text())
 
 
 @st.composite
@@ -289,19 +331,21 @@ def simple_attrs(defaults=None):
     )
 
 
-def lists_of_attrs(defaults=None):
+def lists_of_attrs(defaults=None, min_size=0):
     # Python functions support up to 255 arguments.
-    return st.lists(simple_attrs(defaults), max_size=10).map(
-        lambda l: sorted(l, key=lambda t: t[0]._default is not NOTHING)
-    )
+    return st.lists(
+        simple_attrs(defaults), min_size=min_size, max_size=10
+    ).map(lambda l: sorted(l, key=lambda t: t[0]._default is not NOTHING))
 
 
-def simple_classes(defaults=None):
+def simple_classes(defaults=None, min_attrs=0):
     """
     Return a strategy that yields tuples of simple classes and values to
     instantiate them.
     """
-    return lists_of_attrs(defaults).flatmap(_create_hyp_class)
+    return lists_of_attrs(defaults, min_size=min_attrs).flatmap(
+        _create_hyp_class
+    )
 
 
 # Ok, so st.recursive works by taking a base strategy (in this case,

@@ -1,6 +1,4 @@
 """Test structuring of collections and primitives."""
-import sys
-
 from typing import (
     List,
     Tuple,
@@ -10,11 +8,12 @@ from typing import (
     FrozenSet,
     Dict,
     Optional,
+    Type,
     Union,
 )
 
 from cattr.converters import NoneType
-from cattr._compat import bytes, unicode, is_py2, is_bare, is_union_type
+from cattr._compat import bytes, unicode, is_bare, is_union_type
 
 from pytest import raises
 
@@ -32,7 +31,6 @@ from hypothesis.strategies import (
     frozensets,
     just,
     binary,
-    choices,
     data,
 )
 
@@ -47,11 +45,8 @@ from . import (
 )
 from ._compat import change_type_param
 
-if is_py2:
-    ints_and_type = tuples(integers(max_value=sys.maxint), just(int))
-else:
-    ints_and_type = tuples(integers(), just(int))
 
+ints_and_type = tuples(integers(), just(int))
 floats_and_type = tuples(floats(allow_nan=False), just(float))
 strs_and_type = tuples(text(), just(unicode))
 bytes_and_type = tuples(binary(), just(bytes))
@@ -128,18 +123,6 @@ def test_structuring_sets(converter, set_and_type, set_type):
     assert isinstance(converted, type(set_))
 
 
-def _as_str(x):
-    # in python2, don't call str if the item is already an instance of unicode
-    # or bytes
-    if is_py2:
-        if not isinstance(x, (bytes, unicode)):
-            return str(x)
-        else:
-            return x
-    else:
-        return str(x)
-
-
 @given(sets_of_primitives)
 def test_stringifying_sets(converter, set_and_type):
     # type: (Converter, Any) -> None
@@ -150,7 +133,7 @@ def test_stringifying_sets(converter, set_and_type):
     converted = converter.structure(set_, input_set_type)
     assert len(converted) == len(set_)
     for e in set_:
-        assert _as_str(e) in converted
+        assert str(e) in converted
 
 
 @given(lists(primitives_and_type, min_size=1))
@@ -184,7 +167,7 @@ def test_stringifying_tuples(converter, list_of_vals_and_types):
     assert isinstance(converted, tuple)
 
     for x, y in zip(vals, converted):
-        assert _as_str(x) == y
+        assert str(x) == y
 
     for x in converted:
         # this should just be unicode, but in python2, '' is not unicode
@@ -225,7 +208,7 @@ def test_stringifying_dicts(converter, dict_and_type):
     converted = converter.structure(d, Dict[unicode, unicode])
 
     for k, v in d.items():
-        assert converted[_as_str(k)] == _as_str(v)
+        assert converted[str(k)] == str(v)
 
 
 @given(primitives_and_type)
@@ -286,7 +269,7 @@ def test_stringifying_lists_of_opt(converter, list_and_type):
         if x is None:
             assert x is y
         else:
-            assert _as_str(x) == y
+            assert str(x) == y
 
 
 @given(lists(integers()))
@@ -331,11 +314,11 @@ def test_structure_hook_func(converter):
         converter.structure(10, Bar)
 
 
-@given(choices(), enums_of_primitives())
-def test_structuring_enums(converter, choice, enum):
+@given(data(), enums_of_primitives())
+def test_structuring_enums(converter, data, enum):
     # type: (Converter, Any, Any) -> None
     """Test structuring enums by their values."""
-    val = choice(list(enum))
+    val = data.draw(sampled_from(list(enum)))
 
     assert converter.structure(val.value, enum) == val
 
