@@ -323,9 +323,12 @@ class Converter(object):
             if name[0] == "_":
                 name = name[1:]
             self._update_forward_ref_owners_registry(type_, cl)
-            conv_obj[name] = (
-                dispatch(type_)(val, type_) if type_ is not None else val
-            )
+            try:
+                conv_obj[name] = (
+                    dispatch(type_)(val, type_) if type_ is not None else val
+                )
+            except Exception as e:
+                raise type(e)(str(e) + ' happens at key %s' % name)
 
         return cl(**conv_obj)  # type: ignore
 
